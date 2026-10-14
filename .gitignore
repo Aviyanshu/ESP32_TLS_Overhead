@@ -1,0 +1,12 @@
+# Ignore all .pkl files
+*.pkl
+
+# Ignore all .png files
+*.png
+
+# Ignore specific project directories and folders
+MQTT_Project/
+TempSensorTest/
+clean/
+clean.zip
+mqtt-tls-certs/
