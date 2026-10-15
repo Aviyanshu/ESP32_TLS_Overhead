@@ -7,6 +7,6 @@
 # Ignore specific project directories and folders
 MQTT_Project/
 TempSensorTest/
-clean/
 clean.zip
 mqtt-tls-certs/
+graphs/

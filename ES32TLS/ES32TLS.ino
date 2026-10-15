@@ -9,7 +9,11 @@ const int mqtt_port = 8883;
 
 const char* mqtt_topic = "sensor/test";
 
-const char* ca_cert = R"CERTIFICATE";
+const char* ca_cert = R"EOF(
+-----BEGIN CERTIFICATE-----
+PASTE YOUR CA CERTIFICATE HERE
+-----END CERTIFICATE-----
+)EOF";
 
 unsigned long lastPublished = 0;
 
