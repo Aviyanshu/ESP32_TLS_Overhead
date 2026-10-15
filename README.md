@@ -1,103 +1,71 @@
 # Does TLS slow down an ESP32 MQTT sensor outside the lab?
 
-An independent measurement study of what TLS 1.2 costs an ESP32 MQTT sensor in an ordinary home network: free heap and round-trip time, at three positions relative to the access point, with the TLS handshake excluded.
+I wanted to know what TLS actually costs a small ESP32 sensor once it is running in a normal home, not in a lab. So I set up one ESP32 that sends MQTT messages to a broker on my PC, once with plain MQTT and once over TLS 1.2, and measured two things: how much free memory it has left, and how long each message takes to come back. I did this at three spots in my house (near the router, a medium distance away, and far from it). I left the TLS handshake out on purpose, because I wanted the cost of an already-open connection.
 
-**Full write-up:** [`report/Adhikari_TLS_ESP32_Technical_Report.pdf`](report/Adhikari_TLS_ESP32_Technical_Report.pdf) (4 pages)
 
-![Every round trip by position, payload and protocol](figures/fig_rtt.png)
+- **Board:** ESP32 DevKit V1 (WROOM-32), Arduino framework, WiFi modem sleep turned off
+- **MQTT:** PubSubClient at QoS 0, using `WiFiClient` for plain and `WiFiClientSecure` for TLS
+- **Broker:** Mosquitto on a Windows PC on the same network, port 1883 for plain and 8883 for TLS
+- **TLS:** version 1.2 with ECDHE-RSA-AES256-GCM-SHA384, and my own CA certificate pinned on the ESP32. Only the broker proves who it is; the ESP32 doesn't use a client certificate.
+- **Sensor:** a DS18B20 on GPIO 4, in the temperature sketches only
+- **Network:** one 2.4 GHz access point. I have a second one at home with the same name, and the ESP32 kept joining different ones, so I switched it off for the tests.
 
-## Results at a glance
+### How a measurement works
 
-1,800 round trips (900 plain, 900 TLS) in 36 independent sessions, collected on 2–3 September 2026.
+Every 3 seconds the ESP32 notes the time with `millis()` and publishes `seq,timestamp` to `sensor/test`. It is also subscribed to that topic, so the broker sends the message straight back. When it arrives, the ESP32 checks the time again, and the difference is the round-trip time. It prints that, along with free heap and signal strength (RSSI), over serial, and the logger saves it.
 
-| Finding | Result | Strength |
-| --- | --- | --- |
-| Memory | TLS left **43.1 KB less free heap** (18.7% of plain's free heap), the same in all six conditions within 25 bytes | Strong |
-| Typical latency | Medians within 3 ms; significant shifts go in both directions | Strong, at 1 ms timer resolution |
-| Slow round trips | About **3× as many** TLS trips above every cutoff from 150 ms to 1 s; significant only at 150 and 300 ms, mostly in the sensor runs | Pattern, not confirmed |
-| Near vs away | No TLS excess near the access point; 20 vs 4 trips over 300 ms away from it | Hypothesis (grouping chosen after seeing the data) |
-| Mechanism | Slow trips bunch at ~300 ms and ~1.4 s in both protocols, consistent with TCP retransmission timeouts | Hypothesis (no packet capture yet) |
+In the temperature sketches, the time is noted before the sensor is read, so those round trips also include the sensor read (about 29 ms, the same for plain and TLS).
 
-RTT was measured with `millis()` (1 ms resolution). Per-message encryption on an open session is likely in microseconds, so "no change in typical latency" means no change *at millisecond resolution*, not zero cost.
+Opening the serial port resets the ESP32, so every CSV file is a fresh session: new boot, new WiFi connection, new MQTT connection, and for TLS a new handshake.
 
-This study builds on Del-Valle-Soto et al. (2026), [*Stability-Aware Security–Performance Trade-Off Analysis in Resource-Constrained IoT Systems*](https://doi.org/10.3390/digital6020035), which measured TLS on ESP32s in a controlled lab with the handshake included. Latency numbers are not directly comparable between the two studies.
+## Running the analysis
 
-## Repository layout
-
-```
-ESP32/                 plain MQTT, dummy payload
-ES32TLS/               MQTT over TLS 1.2, dummy payload
-ESP32_TEMP/            plain MQTT, DS18B20 temperature payload
-ESP32TLS_TEMP/         MQTT over TLS 1.2, DS18B20 temperature payload
-loggers/               Python serial loggers, one per sketch (3 sessions x 50 round trips each)
-clean/                 the 36 session CSVs used in the report
-tls_mqtt_analysis.py   prints every table in the report
-make_figures.py        makes the four report figures
-figures/               report figures (PNG)
-report/                the technical report (PDF)
-```
-
-## Setup
-
-| Component | Detail |
-| --- | --- |
-| Board | ESP32 DevKit V1 (WROOM-32), Arduino framework, WiFi modem sleep off |
-| MQTT client | PubSubClient, QoS 0, over `WiFiClient` (plain) or `WiFiClientSecure` (TLS) |
-| Broker | Mosquitto on a Windows PC on the same LAN; port 1883 plain, 8883 TLS |
-| TLS | TLS 1.2, ECDHE-RSA-AES256-GCM-SHA384 (negotiated); self-signed CA pinned on the ESP32; server authentication only |
-| Sensor | DS18B20 on GPIO 4 (sensor sketches only) |
-| Network | One 2.4 GHz access point (a second access point was switched off to stop roaming) |
-
-### How one measurement works
-
-Every 3 s the ESP32 reads `millis()` and publishes `seq,timestamp` to `sensor/test`, a topic it also subscribes to. When the broker echoes the message back, the callback reads `millis()` again; the difference is the round-trip time, printed over serial with free heap and RSSI as a `DATA,...` line. The handshake happens before the first message and is not measured. In the sensor sketches the timestamp is taken before the temperature read, so sensor-run RTTs include it (about 29 ms, equally for both protocols).
-
-Opening the serial port resets the ESP32, so every CSV is an independent session (fresh boot, WiFi association, MQTT connection and, for TLS, a fresh handshake).
-
-## Reproducing the analysis
-
-Requires Python 3 with the packages in `requirements.txt` (tested with pandas 3.0, NumPy 2.5, SciPy 1.18, Matplotlib 3.11).
+You need Python 3 and the packages in `requirements.txt`.
 
 ```bash
 pip install -r requirements.txt
-python tls_mqtt_analysis.py   # reads clean/*.csv, prints all tables, writes D.pkl, TH.pkl, ...
-python make_figures.py        # writes figures/
+python tls_mqtt_analysis.py   # reads clean/*.csv and prints all the results
+python make_figures.py        # saves the figures to figures/
 ```
 
-### Data format
+### The data files
 
-Files are named `<position>__<original file>.csv`, where position is `strong` (near the access point), `medium` or `weak` (far). `tls` in the name means a TLS session; `temp` means a sensor session.
+Each file is named `<position>__<original name>.csv`. The position is `strong` (near the router), `medium` or `weak` (far). If the name has `tls` in it, it's a TLS session; if it has `temp`, it's a temperature-sensor session.
 
-| Column | Meaning |
+| Column | What it is |
 | --- | --- |
-| `SEQUENCE` | Message number, 1–50 in every file (no gaps, so no lost messages or reconnects) |
+| `SEQUENCE` | Message number, 1 to 50 in every file. None are missing, so no messages were lost and the ESP32 never reconnected. |
 | `RTT (ms)` | Round-trip time from `millis()` |
-| `HEAP (bytes)` | `ESP.getFreeHeap()` when the echo arrived |
-| `RSSI (dBm)` | `WiFi.RSSI()` when the echo arrived |
-| `Temperature (C)` | Sensor sessions only |
-| `Wall Clock Time` | Logger PC time |
+| `HEAP (bytes)` | Free heap when the message came back |
+| `RSSI (dBm)` | Signal strength when the message came back |
+| `Temperature (C)` | Temperature-sensor sessions only |
+| `Wall Clock Time` | Time on the logging PC |
 
 ## Running the experiment yourself
 
-1. In each sketch, replace the `SSID`, `PASSWORD` and `IP` placeholders and the placeholder CA certificate. Never commit real credentials.
-2. Create a CA and a broker certificate whose Subject Alternative Name contains the broker's IP address, and point Mosquitto's 8883 listener at them. Paste the CA certificate into the TLS sketches.
-3. Flash a sketch, set `PORT` in the matching logger, and run it; it records three sessions of 50 round trips.
-4. Check every file before analysis: sequence numbers 1–50, a steady RSSI, and the expected heap signature (about 230 KB free for plain, 187 KB for TLS).
+1. In each sketch, put in your own WiFi name, password and broker IP in place of `SSID`, `PASSWORD` and `IP`, and replace the placeholder CA certificate. Don't commit your real details.
+2. Make a CA and a broker certificate that has the broker's IP address in its Subject Alternative Name, and point Mosquitto's 8883 listener at them. Paste the CA certificate into the TLS sketches.
+3. Flash a sketch, set `PORT` in the matching logger to your ESP32's serial port, and run the logger. It records three sessions of 50 messages.
+4. Before analysing, check each file: sequence numbers should run 1 to 50, RSSI should stay steady, and free heap should be about 230 KB for plain or 187 KB for TLS. The heap check is how I caught a run where I had flashed the wrong sketch.
 
 ## Limitations
 
-- 1 ms timer resolution; the per-message encryption cost itself is not resolved.
-- Only 15 of 1,800 trips exceed 500 ms; cutoffs and the near/away grouping were chosen after seeing the data.
-- Plain and TLS ran in consecutive blocks, not interleaved; sensor and dummy runs were collected at different times.
-- One board, broker, access point, location and cipher suite; three positions; no packet capture.
-- Server-only TLS 1.2; mutual TLS, TLS 1.3 and the handshake were not measured, so 43 KB is a lower bound for a hardened setup.
+- `millis()` only measures whole milliseconds, so the actual encryption time per message isn't visible.
+- Only 15 of the 1,800 messages took over 500 ms. I chose the cutoffs and the near/far grouping after seeing the data.
+- I ran all the plain sessions and then all the TLS sessions for each condition, instead of alternating them, so anything that changed over the evening could look like a TLS effect.
+- It's one board, one broker, one router, one house and one cipher suite, with only three positions and no packet capture.
+- Only the broker is authenticated. I didn't test mutual TLS, TLS 1.3 or the handshake itself, so a more secure setup would probably need more than 43 KB.
 
-## Next steps
+## What I'd do next
 
-Microsecond timestamps around the TLS write, packet capture on the broker host, a confirmatory study with interleaved sessions and the near/away grouping fixed in advance, more positions, and mutual TLS / TLS 1.3.
+- Time the TLS write with `micros()` to see the actual encryption cost.
+- Capture packets on the broker PC to check whether the slow messages are TCP retransmissions.
+- Run a bigger study with plain and TLS sessions alternating, and with the near/far grouping and the 300 ms cutoff decided before collecting the data.
+- Add more positions, and try mutual TLS and TLS 1.3.
 
-## Notes
+## A note on tools
 
-The analysis and plotting scripts were written with AI assistance and checked by the author; the experiment design, hardware setup, data collection and debugging are the author's own.
+I wrote the analysis and plotting scripts with help from AI and checked them myself. The experiment design, the hardware setup, the data collection and the debugging are my own.
 
 Aviyanshu Adhikari · aviyanshuadhikari@gmail.com
+
